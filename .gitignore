@@ -205,3 +205,9 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+
+# Data in data folder
+data/train.csv
+data/test.csv
+data/submission.csv
