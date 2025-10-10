@@ -105,7 +105,7 @@ def form_graph_data(data_path: str):
     return graph_list
 
 # --------------------- TRAIN / EVALUATE ---------------------
-def train(model, data_loader, optimizer, criterion, epochs=100, device='cpu'):
+def train(model, data_loader, optimizer, criterion, epochs=100, device='cpu', scheduler=None):
     model = model.to(device)
     for epoch in range(epochs):
         model.train()
@@ -120,9 +120,17 @@ def train(model, data_loader, optimizer, criterion, epochs=100, device='cpu'):
             total_loss += loss.item() * batch.num_graphs
 
         total_loss /= len(data_loader.dataset)
+
+        # Step the scheduler (if provided)
+        if scheduler is not None:
+            scheduler.step()
+
         if (epoch + 1) % 10 == 0 or epoch == 0:
-            print(f"Epoch {epoch+1}/{epochs}, Loss: {total_loss:.4f}")
+            current_lr = optimizer.param_groups[0]['lr']
+            print(f"Epoch {epoch+1}/{epochs}, Loss: {total_loss:.4f}, LR: {current_lr:.6f}")
+
     return model
+
 
 def evaluate(model, data_loader, criterion, device='cpu', mean=0.0, std=1.0, denormalize=False):
     model.eval()
@@ -256,33 +264,30 @@ def main():
     train_data_path = "data/melting-point/train.csv"
     graph_list = form_graph_data(train_data_path)
 
-
     model = GCNRegressor(num_embeddings=11, embed_dim=8, hidden_channels=8, num_layers=4)
     criterion = nn.MSELoss()
 
-    k_folds = 5
     batch_size = 16
     lr = 1e-3
-    weight_decay=1e-6
-    #cross_validation(model, graph_list, torch.optim.Adam, criterion, k_folds,
-    #                 epochs=100, lr=1e-4, weight_decay=1e-6)
-    
+    weight_decay = 1e-6
 
-    # Restore original targets
-
-    # Compute mean/std on training fold
+    # Compute mean/std on training set
     y_train = torch.stack([g.y for g in graph_list])
     mean, std = y_train.mean(), y_train.std()
     model.mean, model.std = mean, std
 
     # Normalize targets
-    for g in graph_list: g.y = (g.y - mean) / std
+    for g in graph_list: 
+        g.y = (g.y - mean) / std
 
     optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
+    # Example scheduler: decay LR by gamma every step_size epochs
+    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=250, gamma=0.5)
+
     train_loader = DataLoader(graph_list, batch_size=batch_size, shuffle=True)
-    model = train(model, train_loader, optimizer=optimizer, criterion=criterion, epochs=2000)
-    predict_with_model(model, device="cpu", to_kaggle=True)
-    
+    model = train(model, train_loader, optimizer=optimizer, criterion=criterion, epochs=2000, scheduler=scheduler)
+
+    predict_with_model(model, device="cpu", to_kaggle=True)    
 
 if __name__ == "__main__":
     main()
