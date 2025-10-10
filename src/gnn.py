@@ -11,10 +11,12 @@ from torch_geometric.data import Data, DataLoader
 from sklearn.model_selection import KFold
 from collections import defaultdict
 import torch.nn.functional as F
+import os
+import subprocess
 
 # --------------------- MODELS ---------------------
 class GCNRegressor(nn.Module):
-    def __init__(self, num_embeddings, embed_dim, hidden_channels, num_layers=2):
+    def __init__(self, num_embeddings, embed_dim, hidden_channels, num_layers=2, mean=0.0, std=1.0):
         super().__init__()
         self.embedding = nn.Embedding(num_embeddings, embed_dim)
 
@@ -25,6 +27,9 @@ class GCNRegressor(nn.Module):
 
         self.fc = nn.Linear(hidden_channels, 1)
         self.reset_parameters()
+
+        self.mean = mean
+        self.std = std
 
     def forward(self, x, edge_index, batch):
         # Map integer atom IDs -> embedding vectors
@@ -43,6 +48,20 @@ class GCNRegressor(nn.Module):
             conv.reset_parameters()
         self.fc.reset_parameters()
 
+class ConstantRegressor(nn.Module):
+    def __init__(self, constant_value):
+        super().__init__()
+        # store as a buffer so it moves correctly with .to(device)
+        self.register_buffer("constant", torch.tensor(constant_value, dtype=torch.float))
+
+    def forward(self, x, edge_index, batch):
+        # output a tensor with shape [num_graphs]
+        num_graphs = batch.max().item() + 1
+        return self.constant.repeat(num_graphs)
+    
+    def reset_parameters(self):
+        pass
+    
 # --------------------- DATA WRANGLING ---------------------
 def symbols_map(data_df: pd.DataFrame):
     symbols = set()
@@ -158,7 +177,7 @@ def cross_validation(model, graph_list, optimizer_class, criterion, k_folds,
         # Compute mean/std on training fold
         y_train = torch.stack([g.y for g in train_graphs])
         mean, std = y_train.mean(), y_train.std()
-        print(mean, std)
+        model.mean, model.std = mean, std
 
         # Normalize targets
         for g in train_graphs: g.y = (g.y - mean) / std
@@ -180,18 +199,90 @@ def cross_validation(model, graph_list, optimizer_class, criterion, k_folds,
     avg_loss /= k_folds
     return avg_loss
 
+def predict_with_model(model, device="cpu", to_kaggle=False):
+    path_to_test = "data/melting-point/test.csv"   # adjust if needed
+    output_path = "out/submission.csv"
+
+    # Load test data
+    test_df = pd.read_csv(path_to_test)
+    graph_list = form_graph_data(path_to_test)
+
+    # DataLoader
+    test_loader = DataLoader(graph_list, batch_size=16, shuffle=False)
+
+    # Predict
+    model.eval()
+    preds = []
+    with torch.no_grad():
+        for batch in test_loader:
+            batch = batch.to(device)
+            out = model(batch.x, batch.edge_index, batch.batch)
+
+            # denormalize using model's stored stats
+            out = out * model.std + model.mean
+            preds.append(out.cpu())
+
+    preds = torch.cat(preds).numpy()
+
+    # Build submission DataFrame
+    submission = pd.DataFrame({
+        "id": test_df["id"],
+        "Tm": preds
+    })
+
+    # Ensure path exists
+    os.makedirs("out", exist_ok=True)
+
+    # Save
+    submission.to_csv(output_path, index=False)
+
+    if to_kaggle:
+        # submit to kaggle
+        competition_slug = "melting-point"
+        message = "Trivial mean prediction."
+
+        subprocess.run([
+        "kaggle", "competitions", "submit",
+        "-c", competition_slug,
+        "-f", output_path,
+        "-m", message])
+
+
+
+
 # --------------------- MAIN ---------------------
 def main():
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
     train_data_path = "data/melting-point/train.csv"
     graph_list = form_graph_data(train_data_path)
 
+
     model = GCNRegressor(num_embeddings=11, embed_dim=8, hidden_channels=8, num_layers=4)
     criterion = nn.MSELoss()
 
     k_folds = 5
-    cross_validation(model, graph_list, torch.optim.Adam, criterion, k_folds,
-                     epochs=100, lr=1e-4, weight_decay=1e-6, batch_size=16)
+    batch_size = 16
+    lr = 1e-3
+    weight_decay=1e-6
+    #cross_validation(model, graph_list, torch.optim.Adam, criterion, k_folds,
+    #                 epochs=100, lr=1e-4, weight_decay=1e-6)
+    
+
+    # Restore original targets
+
+    # Compute mean/std on training fold
+    y_train = torch.stack([g.y for g in graph_list])
+    mean, std = y_train.mean(), y_train.std()
+    model.mean, model.std = mean, std
+
+    # Normalize targets
+    for g in graph_list: g.y = (g.y - mean) / std
+
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
+    train_loader = DataLoader(graph_list, batch_size=batch_size, shuffle=True)
+    model = train(model, train_loader, optimizer=optimizer, criterion=criterion, epochs=2000)
+    predict_with_model(model, device="cpu", to_kaggle=True)
+    
 
 if __name__ == "__main__":
     main()
