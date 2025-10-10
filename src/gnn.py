@@ -8,9 +8,19 @@ import logging
 from rdkit import Chem
 from torch_geometric.data import Data
 import torch.nn.functional as F
-from collections import defaultdict
 
-def smiles_to_torch_geometric_data(formula: str, symbol_to_one_hot, default_value):
+def symbols_to_one_hot_map(data_df: pd.DataFrame) -> tuple[dict, torch.tensor]:
+    symbols = set()
+    for smiles in data_df["SMILES"]:
+        mol = Chem.MolFromSmiles(smiles)
+        symbols.update({atom.GetSymbol() for atom in mol.GetAtoms()})
+    num_elements = len(symbols)
+    symbol_to_one_hot = {val: F.one_hot(torch.tensor(idx), num_elements+1) for idx, val in enumerate(symbols)}
+    default_value = F.one_hot(torch.tensor(num_elements), num_elements+1)
+    return symbol_to_one_hot, default_value
+
+
+def smiles_to_torch_geometric_data(formula: str, symbol_to_one_hot: dict, default_value: torch.tensor):
     mol = Chem.MolFromSmiles(formula)
     atoms, bonds = mol.GetAtoms(), mol.GetBonds()
 
@@ -37,15 +47,8 @@ def form_graph_data(data_path: pd.DataFrame) -> list[Data]:
         logging.error(f"Path not found, ensure path set correctly: {e}")
         raise
 
-    # elements encountered:
-    symbols = set()
-    for smiles in data_df["SMILES"]:
-        mol = Chem.MolFromSmiles(smiles)
-        symbols.update({atom.GetSymbol() for atom in mol.GetAtoms()})
-
-    num_elements = len(symbols)
-    symbol_to_one_hot = {val: F.one_hot(torch.tensor(idx), num_elements+1) for idx, val in enumerate(symbols)}
-    default_value = F.one_hot(torch.tensor(num_elements), num_elements+1)
+    # create mapping from element symbols to one-hot encoding
+    symbol_to_one_hot, default_value = symbols_to_one_hot_map(data_df)
 
     graph_list = []
     for smiles in data_df["SMILES"]:

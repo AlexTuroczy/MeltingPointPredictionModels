@@ -1,4 +1,4 @@
-from src.main import *
+from src.main import main
 
 def test_main_executes_without_error():
     main()
