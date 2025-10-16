@@ -7,10 +7,11 @@ import torch
 from sklearn.model_selection import train_test_split
 from src.train_utils import form_graph_data, cross_validation, train, predict_test_set, set_seed
 import yaml
+from pathlib import Path
 
 
 class GCNRegressor(nn.Module):
-    def __init__(self, num_embeddings, embed_dim, hidden_channels, num_layers=2):
+    def __init__(self, num_embeddings, embed_dim, hidden_channels, num_layers=2, dropout=0.5):
         super().__init__()
         self.embedding = nn.Embedding(num_embeddings, embed_dim)
 
@@ -18,19 +19,23 @@ class GCNRegressor(nn.Module):
         self.convs.append(GCNConv(embed_dim, hidden_channels))
         for _ in range(num_layers - 1):
             self.convs.append(GCNConv(hidden_channels, hidden_channels))
-
+        self.norms = nn.ModuleList([nn.LayerNorm(hidden_channels) for _ in range(num_layers)])
         self.fc = nn.Linear(hidden_channels, 1)
+        self.dropout = nn.Dropout(p=dropout)
         self.reset_parameters()
 
     def forward(self, x, edge_index, batch):
         # Map integer atom IDs -> embedding vectors
         x = self.embedding(x)
 
-        for conv in self.convs:
+        for conv, norm in zip(self.convs, self.norms):
             x = conv(x, edge_index)
+            x = norm(x)
             x = F.relu(x)
+            x = self.dropout(x)
 
         x = global_mean_pool(x, batch)
+        #x = self.dropout(x)
         return self.fc(x).squeeze(-1)
     
     def reset_parameters(self):
@@ -42,7 +47,7 @@ class GCNRegressor(nn.Module):
 def main():
     
     # read in configurable parameters
-    with open("experiments/GCN_Experiment_1/config.yaml", "r") as f:
+    with open(Path(__file__).parent / "config.yaml", "r") as f:
         config = yaml.safe_load(f)
 
     train_data_path = config["train_data_path"]
@@ -55,8 +60,8 @@ def main():
     model_parameters = config["model_parameters"]
     logging_directory = config["logging_directory"]
     to_kaggle = config["to_kaggle"]
+    epochs = config["epochs"]
     kaggle_message = config["kaggle_message"]
-
 
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s',
                         handlers=[
@@ -74,19 +79,16 @@ def main():
 
 
     avg_val = cross_validation(GCNRegressor, model_parameters, graph_list, torch.optim.Adam, criterion, 5,
-                     lr=0.01, weight_decay=1e-4, epochs=200, batch_size=16, device='cpu', seed=seed)
+                     lr=lr, weight_decay=weight_decay, epochs=epochs, batch_size=16, device='cpu', seed=seed)
     logging.info(f"Average validation loss: {avg_val}")
+    
+
+
     train_data, val_data= train_test_split(graph_list, train_size=0.95, random_state=seed, shuffle=True)
-
-    model = GCNRegressor(**model_parameters)
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, factor=0.5, threshold=1e-8)
-
     train_loader = DataLoader(train_data, batch_size=batch_size, shuffle=True, generator=generator)
     val_loader = DataLoader(val_data, batch_size=batch_size, shuffle=True, generator=generator)
-    train(model, train_loader, optimizer, criterion, val_loader=val_loader, scheduler=scheduler, epochs=200)
 
-    predict_test_set(model, path_to_test, output_path, device="cpu", to_kaggle=to_kaggle, kaggle_message=kaggle_message)    
+    predict_test_set(GCNRegressor, model_parameters, train_loader, val_loader, criterion, path_to_test, output_path, seeds = [1,2,3,4,5], device="cpu", to_kaggle=to_kaggle, kaggle_message=kaggle_message, epochs=epochs, lr=lr, weight_decay=weight_decay)    
 
 if __name__ == "__main__":
     main()

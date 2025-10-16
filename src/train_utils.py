@@ -1,3 +1,21 @@
+"""
+train_utils.py
+
+Contains helper functions for training, evaluating, and performing cross-validation
+for graph neural network models on molecular datasets.
+
+Functions include:
+- set_seed: Make experiments deterministic.
+- form_graph_data / smiles_to_torch_geometric_data: Convert SMILES strings to PyTorch Geometric graphs.
+- train: Standard training loop with optional validation and scheduler support.
+- evaluate: Evaluate model performance on a dataset.
+- cross_validation: K-fold cross-validation with per-fold target normalization.
+- predict_test_set: Make predictions on a test set and save results.
+
+Author: Alexander Turoczy
+Date: 2025-10-16
+"""
+
 import pandas as pd
 import torch
 from rdkit import Chem
@@ -176,7 +194,19 @@ def cross_validation(model_class, model_parameters, graph_list, optimizer_class,
     avg_loss /= k_folds
     return avg_loss
 
-def predict_test_set(model, path_to_test, output_path, device="cpu", to_kaggle=False, kaggle_message = None):
+def predict_test_set(model_class, model_parameters, train_loader, val_loader, criterion, path_to_test, output_path, seeds = [0], device="cpu", to_kaggle=False, kaggle_message=None, weight_decay=1e-4, epochs=200, lr=1e-3): 
+
+    models = []
+    for i, seed in enumerate(seeds):
+        logging.info(f"Train model {i+1} of {len(seeds)}")
+        torch.manual_seed(seed)
+        model = model_class(**model_parameters)
+        optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, factor=0.5)
+        train(model, train_loader, optimizer, criterion, val_loader=val_loader, scheduler=scheduler, epochs=epochs)
+        models.append(model)
+    
+    
     # Load test data
     test_df = pd.read_csv(path_to_test)
     graph_list = form_graph_data(path_to_test)
@@ -185,13 +215,17 @@ def predict_test_set(model, path_to_test, output_path, device="cpu", to_kaggle=F
     test_loader = DataLoader(graph_list, batch_size=16, shuffle=False)
 
     # Predict
-    model.eval()
+    
     preds = []
     with torch.no_grad():
         for batch in test_loader:
             batch = batch.to(device)
-            out = model(batch.x, batch.edge_index, batch.batch)
-            preds.append(out.cpu())
+            outs = []
+            for model in models:
+                model.eval()
+                out = model(batch.x, batch.edge_index, batch.batch)
+                outs.append(out)
+            preds.append(torch.stack(outs, dim=0).mean(0).cpu())
 
     preds = torch.cat(preds).numpy()
 

@@ -2,14 +2,16 @@ train_data_path: "data/melting-point/train.csv"
 path_to_test: "data/melting-point/test.csv"
 output_path: "out/submission.csv"
 batch_size: 16
+epochs: 500
 lr: 0.001
 weight_decay: 0.000001
 seed: 0
 model_parameters:
   num_embeddings: 11
-  embed_dim: 8
-  hidden_channels: 16
+  embed_dim: 4
+  hidden_channels: 4
   num_layers: 4
+  dropout: 0.0
 logging_directory: "experiments/GCN_Experiment_1/experiment.log"
-to_kaggle: False
-kaggle_message: "Simple GCN Model."
+to_kaggle: True
+kaggle_message: "GCN Model with dropout."
