@@ -1,4 +1,4 @@
-from src.gnn import smiles_to_torch_geometric_data
+from src.train_utils import smiles_to_torch_geometric_data
 import torch
 from collections import defaultdict
 
